@@ -1,5 +1,7 @@
 # WPJsonScraper
 
+This is a fork of the [original repository by Mickaël "Kilawyn" Walter](https://github.com/MickaelWalter/wp-json-scraper). We applied some minor fixes and added convenience methods to the original library.
+
 ## Introduction
 
 ![WPJsonScraper capture](doc/WPJsonScraperCapture.png)
