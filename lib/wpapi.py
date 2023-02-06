@@ -208,6 +208,29 @@ class WPApi:
 
         return self.basic_info
 
+    def total_posts(self, search_terms=None):
+        """
+        Get total number of posts
+        """
+        if search_terms is None:
+            search_terms = self.search_terms
+        page = 1
+        total_entries = 0
+        base_url = 'wp/v2/posts?page=%d'
+        if search_terms is not None:
+            if '?' in base_url:
+                base_url += '&' + urlencode({'search': search_terms})
+            else:
+                base_url += '?' + urlencode({'search': search_terms})
+    
+        rest_url = url_path_join(self.url, self.api_path, (base_url % page))
+
+        req = self.s.get(rest_url)
+        total_entries = int(req.headers['X-WP-Total'])
+        
+        return total_entries
+        
+
     def crawl_pages(self, url, start=None, num=None, search_terms=None, display_progress=True):
         """
         Crawls all pages while there is at least one result for the given
@@ -335,14 +358,14 @@ class WPApi:
         
         return None
 
-    def update_cache(self, cache, values, total_entries, start=None, num=None):
+    def update_cache(self, cache: list, values: list, total_entries: int, start: int = None, num: int=None):
         if cache is None:
             cache = values
         elif len(values) > 0:
             s = start
             if start is None:
                 s = 0
-            if start >= total_entries:
+            elif start >= total_entries:
                 s = total_entries - 1
             n = num
             if n is not None and s + n > total_entries:
@@ -670,3 +693,97 @@ class WPApi:
             elif t == WPApi.USER:
                 out[t] = self.crawl_pages('wp/v2/users?page=%d', start=start, num=limit, search_terms=keywords, display_progress=False)[0]
         return out
+
+
+    def yield_posts(self, start=None, num=None, search_terms=None):
+        """
+        Generator for get_posts
+        """
+        
+        if self.has_v2 is None:
+            self.get_basic_info()
+        if not self.has_v2:
+            raise WordPressApiNotV2
+
+        total_entries = self.total_posts()
+        start = start or 0
+        num = num or total_entries - start
+
+        for post in self._crawl_pages_generator('wp/v2/posts?page=%d', start=start, num=num, search_terms=search_terms):
+            self.posts = self.update_cache(self.posts, [post], total_entries, start=start, num=num)
+            yield post
+
+    def _crawl_pages_generator(self, url, start=None, num=None, search_terms=None):
+        """
+        Generator extension
+        Crawls all pages while there is at least one result for the given
+        endpoint or tries to get pages from start to end
+        """
+        if search_terms is None:
+            search_terms = self.search_terms
+        page = 1
+        total_entries = 0
+        more_entries = True
+        entries = []
+        base_url = url
+        entries_left = 1
+        per_page = 10
+        if search_terms is not None:
+            if '?' in base_url:
+                base_url += '&' + urlencode({'search': search_terms})
+            else:
+                base_url += '?' + urlencode({'search': search_terms})
+        if start is not None:
+            page = math.floor(start/per_page) + 1
+        if num is not None:
+            entries_left = num
+        while more_entries and entries_left > 0:
+            rest_url = url_path_join(self.url, self.api_path, (base_url % page))
+            if start is not None:
+                rest_url += "&per_page=%d" % per_page
+            try:
+                req = self.s.get(rest_url)
+                if (page == 1 or start is not None and page == math.floor(start/per_page) + 1) and 'X-WP-Total' in req.headers:
+                    total_entries = int(req.headers['X-WP-Total'])
+                    if start is not None and total_entries < start:
+                        start = total_entries - 1
+            except HTTPError400:
+                break
+            except requests.exceptions.HTTPError as e:
+                print(f'HTTPError: {e}')
+                break
+            except Exception as e:
+                print(f'Error: {e}')
+                break
+            try:
+                json_content = get_content_as_json(req)
+                if type(json_content) is list and len(json_content) > 0:
+                    if (start is None or start is not None and page > math.floor(start/per_page) + 1) and num is None:
+                        entries += json_content
+                        if start is not None:
+                            entries_left -= len(json_content)
+                    elif start is not None and page == math.floor(start/per_page) + 1:
+                        if num is None or num is not None and len(json_content[start % per_page:]) < num:
+                            entries += json_content[start % per_page:]
+                            if num is not None:
+                                entries_left -= len(json_content[start % per_page:])
+                        else:
+                            entries += json_content[start % per_page:(start % per_page) + num]
+                            entries_left = 0
+                    else:
+                        if num is not None and entries_left > len(json_content):
+                            entries += json_content
+                            entries_left -= len(json_content)
+                        else:
+                            entries += json_content[:entries_left]
+                            entries_left = 0    
+                    for post in json_content:
+                        yield post
+                else:
+                    more_entries = False
+                
+            except JSONDecodeError:
+                more_entries = False
+
+            page += 1
+
